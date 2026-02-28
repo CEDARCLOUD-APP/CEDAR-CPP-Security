@@ -50,6 +50,9 @@
 #include <tlhelp32.h>
 #include <winternl.h>
 #include <psapi.h>
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include <cpuid.h>
+#endif
 #pragma comment(lib, "bcrypt.lib")
 #endif
 
@@ -706,7 +709,7 @@ inline bool debug_privilege_enabled() {
     bool enabled = false;
     if (::GetTokenInformation(token, TokenPrivileges, buf, size, &size)) {
         LUID dbgLuid{};
-        if (::LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &dbgLuid)) {
+        if (::LookupPrivilegeValueW(nullptr, L"SeDebugPrivilege", &dbgLuid)) {
             for (DWORD i = 0; i < buf->PrivilegeCount; ++i) {
                 const LUID& luid = buf->Privileges[i].Luid;
                 if ((buf->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED) &&
@@ -795,7 +798,16 @@ inline bool cpuid_hypervisor_bit() {
 inline bool cpuid_vm_vendor_blacklisted(const uint32_t* hashes, size_t count) {
     if (!hashes || count == 0) return false;
     int cpu_info[4] = {0};
+#if defined(_MSC_VER)
     __cpuid(cpu_info, 0x40000000);
+#elif defined(__GNUC__)
+    unsigned int eax=0, ebx=0, ecx=0, edx=0;
+    if (!__get_cpuid(0x40000000, &eax, &ebx, &ecx, &edx)) return false;
+    cpu_info[0] = static_cast<int>(eax);
+    cpu_info[1] = static_cast<int>(ebx);
+    cpu_info[2] = static_cast<int>(ecx);
+    cpu_info[3] = static_cast<int>(edx);
+#endif
     char vendor[13] = {0};
     std::memcpy(vendor + 0, &cpu_info[1], 4);
     std::memcpy(vendor + 4, &cpu_info[2], 4);
@@ -1106,7 +1118,7 @@ inline uint32_t delay_import_name_hash() {
     auto* desc = reinterpret_cast<ImgDelayDescr*>(base + dir.VirtualAddress);
     uint32_t h = 2166136261u;
     for (; desc->rvaDLLName; ++desc) {
-        auto* thunk = reinterpret_cast<ImgThunkData*>(base + desc->rvaINT);
+        auto* thunk = reinterpret_cast<PImgThunkData>(base + desc->rvaINT);
         for (; thunk->u1.AddressOfData; ++thunk) {
             if (IMAGE_SNAP_BY_ORDINAL(thunk->u1.Ordinal)) {
                 uint16_t ord = static_cast<uint16_t>(IMAGE_ORDINAL(thunk->u1.Ordinal));
@@ -1714,7 +1726,11 @@ inline uint32_t parent_pid() {
     PROCESS_BASIC_INFORMATION pbi{};
     NTSTATUS st = ntq(::GetCurrentProcess(), ProcessBasicInformation, &pbi, sizeof(pbi), nullptr);
     if (st < 0) return 0;
+#if defined(__MINGW32__)
+    return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pbi.InheritedFromUniqueProcessId));
+#else
     return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pbi.Reserved3));
+#endif
 }
 
 inline bool parent_chain_valid(const uint32_t* hashes, size_t count, size_t max_depth = 4) {
