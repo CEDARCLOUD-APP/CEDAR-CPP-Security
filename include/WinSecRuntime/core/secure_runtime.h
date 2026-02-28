@@ -10,6 +10,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <vector>
+#include <algorithm>
 #include <type_traits>
 #include <cmath>
 #include <limits>
@@ -119,6 +121,9 @@ enum class Alert : uint64_t {
     , iat_writable                   = 1ull << 53
     , entry_point_protect_invalid    = 1ull << 54
     , thread_suspended_detected      = 1ull << 55
+    , module_list_hash_mismatch      = 1ull << 56
+    , module_count_mismatch          = 1ull << 57
+    , module_whitelist_violation     = 1ull << 58
 };
 
 inline constexpr Alert operator|(Alert a, Alert b) {
@@ -1799,6 +1804,65 @@ inline Report run(uint32_t expected_parent_pid, const wchar_t* expected_image_pa
 namespace anti_injection {
 
 #if SECURE_PLATFORM_WINDOWS
+inline uint32_t module_list_hash() {
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ::GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    MODULEENTRY32W me{};
+    me.dwSize = sizeof(me);
+    std::vector<uint32_t> hs;
+    if (::Module32FirstW(snap, &me)) {
+        do {
+            uint32_t h = util::fnv1a32_ci_w(me.szExePath);
+            hs.push_back(h);
+        } while (::Module32NextW(snap, &me));
+    }
+    ::CloseHandle(snap);
+    if (hs.empty()) return 0;
+    std::sort(hs.begin(), hs.end());
+    uint32_t h = 2166136261u;
+    for (uint32_t v : hs) {
+        h ^= (v & 0xFF); h *= 16777619u;
+        h ^= ((v >> 8) & 0xFF); h *= 16777619u;
+        h ^= ((v >> 16) & 0xFF); h *= 16777619u;
+        h ^= ((v >> 24) & 0xFF); h *= 16777619u;
+    }
+    return h;
+}
+
+inline size_t module_count() {
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ::GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    MODULEENTRY32W me{};
+    me.dwSize = sizeof(me);
+    size_t count = 0;
+    if (::Module32FirstW(snap, &me)) {
+        do { ++count; } while (::Module32NextW(snap, &me));
+    }
+    ::CloseHandle(snap);
+    return count;
+}
+
+inline bool module_whitelist_valid(const uint32_t* hashes, size_t count) {
+    if (!hashes || count == 0) return true;
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ::GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    MODULEENTRY32W me{};
+    me.dwSize = sizeof(me);
+    bool ok = true;
+    if (::Module32FirstW(snap, &me)) {
+        do {
+            uint32_t h = util::fnv1a32_ci_w(me.szExePath);
+            bool found = false;
+            for (size_t i = 0; i < count; ++i) {
+                if (hashes[i] == h) { found = true; break; }
+            }
+            if (!found) { ok = false; break; }
+        } while (::Module32NextW(snap, &me));
+    }
+    ::CloseHandle(snap);
+    return ok;
+}
+
 inline bool module_blacklist_detected(const uint32_t* hashes, size_t count) {
     if (!hashes || count == 0) return false;
     HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ::GetCurrentProcessId());
@@ -1823,6 +1887,9 @@ inline bool module_blacklist_detected(const uint32_t* hashes, size_t count) {
 }
 #else
 inline bool module_blacklist_detected(const uint32_t*, size_t) { return false; }
+inline uint32_t module_list_hash() { return 0; }
+inline size_t module_count() { return 0; }
+inline bool module_whitelist_valid(const uint32_t*, size_t) { return true; }
 #endif
 
 inline Report run(const uint32_t* hashes, size_t count) {
@@ -1981,6 +2048,10 @@ struct Config {
     size_t parent_chain_max_depth = 4;
     const uint32_t* module_hashes = nullptr;
     size_t module_hash_count = 0;
+    const uint32_t* module_whitelist_hashes = nullptr;
+    size_t module_whitelist_count = 0;
+    uint32_t module_list_hash_baseline = 0;
+    size_t module_count_baseline = 0;
     const uint32_t* process_hashes = nullptr;
     size_t process_hash_count = 0;
     const uint32_t* window_hashes = nullptr;
@@ -2101,6 +2172,21 @@ inline Report run_all_checks(const Config& cfg = {}) {
         if (!process_integrity::parent_chain_valid(cfg.parent_chain_hashes, cfg.parent_chain_hash_count,
                                                    cfg.parent_chain_max_depth)) {
             r.set(Alert::parent_chain_mismatch);
+        }
+    }
+    if (cfg.module_list_hash_baseline != 0) {
+        if (anti_injection::module_list_hash() != cfg.module_list_hash_baseline) {
+            r.set(Alert::module_list_hash_mismatch);
+        }
+    }
+    if (cfg.module_count_baseline != 0) {
+        if (anti_injection::module_count() != cfg.module_count_baseline) {
+            r.set(Alert::module_count_mismatch);
+        }
+    }
+    if (cfg.module_whitelist_hashes && cfg.module_whitelist_count > 0) {
+        if (!anti_injection::module_whitelist_valid(cfg.module_whitelist_hashes, cfg.module_whitelist_count)) {
+            r.set(Alert::module_whitelist_violation);
         }
     }
     return r;

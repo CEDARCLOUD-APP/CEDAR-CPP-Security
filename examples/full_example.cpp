@@ -21,6 +21,8 @@ int main() {
     };
     policy.cfg.module_hashes = module_hashes;
     policy.cfg.module_hash_count = sizeof(module_hashes) / sizeof(module_hashes[0]);
+    policy.cfg.module_list_hash_baseline = secure::anti_injection::module_list_hash();
+    policy.cfg.module_count_baseline = secure::anti_injection::module_count();
 
     static constexpr uint32_t process_hashes[] = {
         secure::util::fnv1a32_ci_literal("x64dbg.exe"),

@@ -114,6 +114,12 @@ cfg.parent_chain_max_depth = 4;
 cfg.module_hashes = nullptr;
 cfg.module_hash_count = 0;
 
+cfg.module_whitelist_hashes = nullptr;
+cfg.module_whitelist_count = 0;
+
+cfg.module_list_hash_baseline = 0;
+cfg.module_count_baseline = 0;
+
 cfg.process_hashes = nullptr;
 cfg.process_hash_count = 0;
 
@@ -168,8 +174,6 @@ cfg.prologue_guard_count = 0;
 
 ## Feature Reference
 
-This section documents each defensive feature and the related configuration or helper APIs.
-
 ### Anti‑Debug
 
 Signals used:
@@ -183,8 +187,6 @@ Signals used:
 - Debug privilege enabled check
 - SEH chain validation (x86)
 - Suspended thread detection (optional undocumented)
-
-No active blocking or deception. These are detection and reporting only.
 
 ### Anti‑Tamper and Integrity
 
@@ -211,10 +213,14 @@ No active blocking or deception. These are detection and reporting only.
 - IAT pointer bounds validation
 - IAT writable detection
 - IAT read‑only enforcement
+- IAT count baseline
 
 ### Anti‑Injection and Memory Guard
 
 - Module blacklist scanning by hash
+- Module list hash baseline
+- Module count baseline
+- Module whitelist validation
 - Thread start address anomaly detection
 - RWX section detection
 - Writable `.text` detection
