@@ -360,6 +360,30 @@ inline uint32_t xorshift32(uint32_t& s) {
     return s;
 }
 
+inline void secure_zero(void* p, size_t n) {
+    volatile uint8_t* v = static_cast<volatile uint8_t*>(p);
+    while (n--) { *v++ = 0; }
+}
+
+template <size_t N, uint8_t K>
+struct obf_string {
+    std::array<char, N> data{};
+    constexpr obf_string(const char (&s)[N]) {
+        for (size_t i = 0; i < N; ++i) data[i] = static_cast<char>(s[i] ^ K);
+    }
+    inline void decrypt_to(char* out) const {
+        for (size_t i = 0; i < N; ++i) out[i] = static_cast<char>(data[i] ^ K);
+    }
+    inline std::array<char, N> decrypt() const {
+        std::array<char, N> out{};
+        decrypt_to(out.data());
+        return out;
+    }
+};
+
+#define SECURE_OBF_KEY(line) static_cast<uint8_t>(((line) * 131u + 17u) % 251u + 1u)
+#define SECURE_OBF(s) secure::util::obf_string<sizeof(s), SECURE_OBF_KEY(__LINE__)>(s)
+
 inline void hmac_sha256(const uint8_t* key, size_t key_len,
                         const uint8_t* msg, size_t msg_len,
                         uint8_t out[32]) {

@@ -89,7 +89,17 @@ WinSecRuntime::EnableHookGuard();
 - Export protection: export name hash baseline.
 - Signature presence check: optional certificate table presence.
 - VM heuristic: CPUID hypervisor bit + vendor string blacklist.
+- String protection: compile-time XOR string obfuscation with runtime decrypt + zeroization helper.
 - Crypto utilities: CRC32, FNV-1a, SHA-256, HMAC-SHA256, secure RNG (BCrypt on Windows).
+
+## String Obfuscation (Compile-Time XOR)
+
+```cpp
+auto obf = SECURE_OBF("WinSecRuntime");
+auto plain = obf.decrypt();
+// use plain.data() as needed
+secure::util::secure_zero(plain.data(), plain.size());
+```
 
 ## Usage (Header-Only)
 

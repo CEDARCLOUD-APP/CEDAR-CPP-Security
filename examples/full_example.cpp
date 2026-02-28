@@ -89,6 +89,10 @@ int main() {
     policy.cfg.entry_prologue_baseline = secure::anti_tamper::entry_prologue_hash_current(policy.cfg.entry_prologue_size);
     policy.cfg.signature_required = false;
 
+    auto obf = SECURE_OBF("WinSecRuntime");
+    auto plain = obf.decrypt();
+    secure::util::secure_zero(plain.data(), plain.size());
+
     double entropy = secure::anti_tamper::text_entropy_current();
     policy.cfg.text_entropy_min = entropy - 0.3;
     policy.cfg.text_entropy_max = entropy + 0.3;
