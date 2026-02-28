@@ -56,8 +56,10 @@ int main() {
     policy.cfg.iat_baseline = secure::iat_guard::iat_hash(::GetModuleHandleW(nullptr));
     policy.cfg.iat_bounds_check = true;
     policy.cfg.iat_write_protect = true;
+    policy.cfg.iat_writable_check = true;
     policy.cfg.import_name_hash_baseline = secure::iat_guard::import_name_hash(::GetModuleHandleW(nullptr));
     policy.cfg.import_module_hash_baseline = secure::anti_tamper::import_module_hash();
+    policy.cfg.iat_count_baseline = secure::iat_guard::iat_entry_count(::GetModuleHandleW(nullptr));
 
     size_t iat_count = secure::iat_guard::iat_entry_count(::GetModuleHandleW(nullptr));
     std::vector<void*> iat_mirror(iat_count);
@@ -83,6 +85,7 @@ int main() {
 
     policy.cfg.delay_import_name_hash_baseline = secure::anti_tamper::delay_import_name_hash();
     policy.cfg.export_name_hash_baseline = secure::anti_tamper::export_name_hash();
+    policy.cfg.export_rva_hash_baseline = secure::anti_tamper::export_rva_table_hash();
     policy.cfg.tls_callback_expected = secure::anti_tamper::tls_callback_count();
     policy.cfg.tls_callback_hash_baseline = secure::anti_tamper::tls_callback_hash();
     policy.cfg.entry_prologue_size = 16;
@@ -92,6 +95,9 @@ int main() {
     auto obf = SECURE_OBF("WinSecRuntime");
     auto plain = obf.decrypt();
     secure::util::secure_zero(plain.data(), plain.size());
+    auto obfw = SECURE_OBF_W(L"WinSecRuntime");
+    auto plainw = obfw.decrypt();
+    secure::util::secure_zero(plainw.data(), plainw.size() * sizeof(wchar_t));
 
     double entropy = secure::anti_tamper::text_entropy_current();
     policy.cfg.text_entropy_min = entropy - 0.3;

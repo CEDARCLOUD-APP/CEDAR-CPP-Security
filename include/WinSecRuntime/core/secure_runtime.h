@@ -53,6 +53,8 @@
 #pragma comment(lib, "bcrypt.lib")
 #endif
 
+#include "strings.h"
+
 namespace secure {
 
 // reporting
@@ -109,6 +111,11 @@ enum class Alert : uint64_t {
     exec_region_whitelist_violation  = 1ull << 48
     , export_name_hash_mismatch      = 1ull << 49
     , import_module_hash_mismatch    = 1ull << 50
+    , export_rva_hash_mismatch       = 1ull << 51
+    , iat_count_mismatch             = 1ull << 52
+    , iat_writable                   = 1ull << 53
+    , entry_point_protect_invalid    = 1ull << 54
+    , thread_suspended_detected      = 1ull << 55
 };
 
 inline constexpr Alert operator|(Alert a, Alert b) {
@@ -360,30 +367,6 @@ inline uint32_t xorshift32(uint32_t& s) {
     return s;
 }
 
-inline void secure_zero(void* p, size_t n) {
-    volatile uint8_t* v = static_cast<volatile uint8_t*>(p);
-    while (n--) { *v++ = 0; }
-}
-
-template <size_t N, uint8_t K>
-struct obf_string {
-    std::array<char, N> data{};
-    constexpr obf_string(const char (&s)[N]) {
-        for (size_t i = 0; i < N; ++i) data[i] = static_cast<char>(s[i] ^ K);
-    }
-    inline void decrypt_to(char* out) const {
-        for (size_t i = 0; i < N; ++i) out[i] = static_cast<char>(data[i] ^ K);
-    }
-    inline std::array<char, N> decrypt() const {
-        std::array<char, N> out{};
-        decrypt_to(out.data());
-        return out;
-    }
-};
-
-#define SECURE_OBF_KEY(line) static_cast<uint8_t>(((line) * 131u + 17u) % 251u + 1u)
-#define SECURE_OBF(s) secure::util::obf_string<sizeof(s), SECURE_OBF_KEY(__LINE__)>(s)
-
 inline void hmac_sha256(const uint8_t* key, size_t key_len,
                         const uint8_t* msg, size_t msg_len,
                         uint8_t out[32]) {
@@ -616,6 +599,44 @@ inline bool trap_flag_set() {
 #endif
 }
 
+inline bool thread_suspended_detected() {
+#if SECURE_ENABLE_UNDOCUMENTED
+    using NtQueryInformationThread_t = NTSTATUS (NTAPI*)(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
+    auto* ntq = reinterpret_cast<NtQueryInformationThread_t>(
+        ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
+    if (!ntq) return false;
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    bool hit = false;
+    if (::Thread32First(snap, &te)) {
+        do {
+            if (te.th32OwnerProcessID != ::GetCurrentProcessId()) continue;
+            HANDLE h = ::OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+            if (!h) continue;
+            struct THREAD_BASIC_INFORMATION_LOCAL {
+                NTSTATUS ExitStatus;
+                PVOID TebBaseAddress;
+                CLIENT_ID ClientId;
+                ULONG_PTR AffinityMask;
+                LONG Priority;
+                LONG BasePriority;
+                ULONG SuspendCount;
+            } tbi{};
+            NTSTATUS st = ntq(h, (THREADINFOCLASS)0, &tbi, sizeof(tbi), nullptr);
+            if (st >= 0 && tbi.SuspendCount > 0) { hit = true; }
+            ::CloseHandle(h);
+            if (hit) break;
+        } while (::Thread32Next(snap, &te));
+    }
+    ::CloseHandle(snap);
+    return hit;
+#else
+    return false;
+#endif
+}
+
 inline bool process_blacklist_detected(const uint32_t* hashes, size_t count) {
     if (!hashes || count == 0) return false;
     HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -717,6 +738,7 @@ inline bool seh_chain_valid() { return true; }
 inline bool process_blacklist_detected(const uint32_t*, size_t) { return false; }
 inline bool window_blacklist_detected(const uint32_t*, size_t) { return false; }
 inline bool debug_privilege_enabled() { return false; }
+inline bool thread_suspended_detected() { return false; }
 #endif
 
 inline Report run_static(const uint32_t* window_hashes = nullptr, size_t window_count = 0,
@@ -745,6 +767,7 @@ inline Report run_dynamic() {
     if (hw_breakpoints_all_threads()) r.set(Alert::hw_breakpoint);
     if (trap_flag_set()) r.set(Alert::trap_flag);
     if (text_int3_scan()) r.set(Alert::text_int3_scan);
+    if (thread_suspended_detected()) r.set(Alert::thread_suspended_detected);
 #endif
     return r;
 }
@@ -907,6 +930,29 @@ inline uint32_t export_name_hash() {
             h ^= static_cast<uint8_t>(*s++);
             h *= 16777619u;
         }
+    }
+    return h;
+}
+
+inline uint32_t export_rva_table_hash() {
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return 0;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir.VirtualAddress || !dir.Size) return 0;
+    auto* exp = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+    auto* funcs = reinterpret_cast<uint32_t*>(base + exp->AddressOfFunctions);
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < exp->NumberOfFunctions; ++i) {
+        uint32_t rva = funcs[i];
+        h ^= (rva & 0xFF); h *= 16777619u;
+        h ^= ((rva >> 8) & 0xFF); h *= 16777619u;
+        h ^= ((rva >> 16) & 0xFF); h *= 16777619u;
+        h ^= ((rva >> 24) & 0xFF); h *= 16777619u;
     }
     return h;
 }
@@ -1142,6 +1188,24 @@ inline bool entry_point_valid() {
         }
     }
     return false;
+}
+
+inline bool entry_point_protect_valid() {
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return false;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    uint32_t ep = nt->OptionalHeader.AddressOfEntryPoint;
+    if (ep == 0) return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (::VirtualQuery(base + ep, &mbi, sizeof(mbi)) == 0) return false;
+    DWORD p = mbi.Protect & 0xFF;
+    if (!(p == PAGE_EXECUTE || p == PAGE_EXECUTE_READ || p == PAGE_EXECUTE_READWRITE || p == PAGE_EXECUTE_WRITECOPY)) return false;
+    if (p == PAGE_EXECUTE_READWRITE || p == PAGE_EXECUTE_WRITECOPY) return false;
+    return true;
 }
 
 inline bool section_bounds_valid() {
@@ -1397,6 +1461,8 @@ inline uint32_t entry_prologue_hash_current(uint32_t) { return 0; }
 inline size_t tls_callback_count() { return 0; }
 inline uint32_t tls_callback_hash() { return 0; }
 inline uint32_t export_name_hash() { return 0; }
+inline uint32_t export_rva_table_hash() { return 0; }
+inline bool entry_point_protect_valid() { return true; }
 inline bool text_sha256_mismatch(const std::array<uint8_t, 32>&) { return false; }
 inline std::array<uint8_t, 32> text_sha256_current() { return {}; }
 inline bool text_rolling_crc_mismatch(uint32_t, size_t, size_t) { return false; }
@@ -1420,6 +1486,7 @@ inline Report run() {
     if (!tls_directory_valid()) r.set(Alert::tls_directory_invalid);
     if (!reloc_directory_valid()) r.set(Alert::reloc_directory_invalid);
     if (!import_directory_valid()) r.set(Alert::import_directory_invalid);
+    if (!entry_point_protect_valid()) r.set(Alert::entry_point_protect_invalid);
     if (!entry_point_valid()) r.set(Alert::entry_point_invalid);
     if (!section_bounds_valid()) r.set(Alert::section_bounds_invalid);
     if (!pe_header_valid()) r.set(Alert::pe_header_invalid);
@@ -1543,6 +1610,21 @@ inline bool iat_pointer_bounds_valid(HMODULE hMod) {
     return true;
 }
 
+inline bool iat_writable(HMODULE hMod) {
+    if (!hMod) return false;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
+    if (!dir.VirtualAddress || !dir.Size) return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (::VirtualQuery(base + dir.VirtualAddress, &mbi, sizeof(mbi)) == 0) return false;
+    DWORD p = mbi.Protect & 0xFF;
+    return (p == PAGE_READWRITE || p == PAGE_WRITECOPY || p == PAGE_EXECUTE_READWRITE || p == PAGE_EXECUTE_WRITECOPY);
+}
+
 inline bool iat_enforce_readonly(HMODULE hMod) {
     if (!hMod) return false;
     auto* base = reinterpret_cast<uint8_t*>(hMod);
@@ -1596,6 +1678,7 @@ inline size_t iat_entry_count(void*) { return 0; }
 inline bool iat_fill_mirror(void*, void**, size_t) { return false; }
 inline bool iat_mirror_mismatch(void*, void**, size_t) { return false; }
 inline bool iat_pointer_bounds_valid(void*) { return true; }
+inline bool iat_writable(void*) { return false; }
 inline bool iat_enforce_readonly(void*) { return true; }
 inline uint32_t import_name_hash(void*) { return 0; }
 #endif
@@ -1892,6 +1975,8 @@ struct Config {
     uint32_t import_name_hash_baseline = 0;
     uint32_t import_module_hash_baseline = 0;
     bool iat_write_protect = false;
+    bool iat_writable_check = false;
+    size_t iat_count_baseline = 0;
     void** iat_mirror = nullptr;
     size_t iat_mirror_count = 0;
     bool iat_bounds_check = false;
@@ -1907,6 +1992,7 @@ struct Config {
     uint32_t text_chunk_baseline = 0;
     uint32_t delay_import_name_hash_baseline = 0;
     uint32_t export_name_hash_baseline = 0;
+    uint32_t export_rva_hash_baseline = 0;
     size_t tls_callback_expected = 0;
     uint32_t tls_callback_hash_baseline = 0;
     uint32_t entry_prologue_size = 16;
@@ -1942,8 +2028,15 @@ inline Report run_all_checks(const Config& cfg = {}) {
         uint32_t h = anti_tamper::import_module_hash();
         if (h != cfg.import_module_hash_baseline) r.set(Alert::import_module_hash_mismatch);
     }
+    if (cfg.iat_count_baseline != 0) {
+        size_t c = iat_guard::iat_entry_count(::GetModuleHandleW(nullptr));
+        if (c != cfg.iat_count_baseline) r.set(Alert::iat_count_mismatch);
+    }
     if (cfg.iat_write_protect) {
         if (!iat_guard::iat_enforce_readonly(::GetModuleHandleW(nullptr))) r.set(Alert::iat_write_protect_fail);
+    }
+    if (cfg.iat_writable_check) {
+        if (iat_guard::iat_writable(::GetModuleHandleW(nullptr))) r.set(Alert::iat_writable);
     }
     if (cfg.iat_mirror && cfg.iat_mirror_count > 0) {
         if (iat_guard::iat_mirror_mismatch(::GetModuleHandleW(nullptr), cfg.iat_mirror, cfg.iat_mirror_count)) {
@@ -1970,6 +2063,10 @@ inline Report run_all_checks(const Config& cfg = {}) {
     if (cfg.export_name_hash_baseline != 0) {
         uint32_t eh = anti_tamper::export_name_hash();
         if (eh != cfg.export_name_hash_baseline) r.set(Alert::export_name_hash_mismatch);
+    }
+    if (cfg.export_rva_hash_baseline != 0) {
+        uint32_t rh = anti_tamper::export_rva_table_hash();
+        if (rh != cfg.export_rva_hash_baseline) r.set(Alert::export_rva_hash_mismatch);
     }
     if (!anti_tamper::delay_import_directory_valid()) r.set(Alert::delay_import_invalid);
     if (cfg.tls_callback_expected != 0) {

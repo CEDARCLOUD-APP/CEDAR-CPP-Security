@@ -76,20 +76,20 @@ WinSecRuntime::EnableHookGuard();
 
 ## Current Defensive Capabilities
 
-- Anti-debug: PEB flags, debug object/port, HW breakpoints (current thread + all threads), trap flag, timing anomalies, QPC drift, `.text` INT3 scan, debug privilege detection, SEH chain validation (x86).
-- Anti-tamper: PE header validation, entry-point validation, section bounds validation, `.text` CRC32, `.text` SHA-256 baseline compare, rolling CRC baseline compare, entropy anomaly detection, randomized chunk hash validation.
+- Anti-debug: PEB flags, debug object/port, HW breakpoints (current thread + all threads), trap flag, timing anomalies, QPC drift, `.text` INT3 scan, debug privilege detection, SEH chain validation (x86), suspended thread detection (optional).
+- Anti-tamper: PE header validation, entry-point validation, entry-point RX protection check, section bounds validation, `.text` CRC32, `.text` SHA-256 baseline compare, rolling CRC baseline compare, entropy anomaly detection, randomized chunk hash validation.
 - Memory guard: RWX section detection, writable `.text` detection, private executable region scan, executable private region anomaly scan, optional private exec whitelist.
 - Anti-hook: prologue hash validation with caller-supplied baselines.
 - Anti-injection: module blacklist scanning by hash, thread start address anomaly detection.
 - Process integrity: parent PID and image path validation, parent chain validation (hash whitelist).
-- IAT guard: runtime IAT hash with caller baseline, IAT mirror comparison, IAT pointer bounds validation, IAT read-only enforcement, import name hash validation, import module hash validation.
+- IAT guard: runtime IAT hash baseline, IAT mirror comparison, IAT pointer bounds validation, IAT read-only enforcement, IAT writable detection, import name hash validation, import module hash validation, IAT count baseline.
 - PE directory validation: import/export/tls/reloc/delay-import directory bounds checks + export forwarder validation.
 - TLS callback protection: TLS callback count + hash baselines.
 - Entry point protection: entry-point prologue hash baseline.
-- Export protection: export name hash baseline.
+- Export protection: export name hash baseline + export RVA table hash baseline.
 - Signature presence check: optional certificate table presence.
 - VM heuristic: CPUID hypervisor bit + vendor string blacklist.
-- String protection: compile-time XOR string obfuscation with runtime decrypt + zeroization helper.
+- String protection: compile-time XOR string/wide-string obfuscation with runtime decrypt + zeroization helper.
 - Crypto utilities: CRC32, FNV-1a, SHA-256, HMAC-SHA256, secure RNG (BCrypt on Windows).
 
 ## String Obfuscation (Compile-Time XOR)
@@ -97,8 +97,11 @@ WinSecRuntime::EnableHookGuard();
 ```cpp
 auto obf = SECURE_OBF("WinSecRuntime");
 auto plain = obf.decrypt();
-// use plain.data() as needed
 secure::util::secure_zero(plain.data(), plain.size());
+
+auto obfw = SECURE_OBF_W(L"WinSecRuntime");
+auto plainw = obfw.decrypt();
+secure::util::secure_zero(plainw.data(), plainw.size() * sizeof(wchar_t));
 ```
 
 ## Usage (Header-Only)
