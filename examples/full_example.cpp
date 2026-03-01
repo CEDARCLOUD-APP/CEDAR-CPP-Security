@@ -19,6 +19,8 @@ int main() {
     policy.cfg.cwd_hash_baseline = secure::process_integrity::cwd_hash();
     policy.cfg.disallow_unc = true;
     policy.cfg.disallow_motw = true;
+    policy.cfg.enforce_safe_dll_search = true;
+    policy.cfg.enforce_module_path_policy = true;
 
     static constexpr uint32_t module_hashes[] = {
         secure::util::fnv1a32_ci_literal("x64dbg.dll"),
@@ -58,6 +60,14 @@ int main() {
     };
     policy.cfg.window_hashes = window_hashes;
     policy.cfg.window_hash_count = sizeof(window_hashes) / sizeof(window_hashes[0]);
+
+    static constexpr uint32_t known_dlls[] = {
+        secure::util::fnv1a32_ci_literal("ntdll.dll"),
+        secure::util::fnv1a32_ci_literal("kernel32.dll"),
+        secure::util::fnv1a32_ci_literal("kernelbase.dll")
+    };
+    policy.cfg.known_dll_hashes = known_dlls;
+    policy.cfg.known_dll_count = sizeof(known_dlls) / sizeof(known_dlls[0]);
 
     static constexpr uint32_t vm_vendor_hashes[] = {
         secure::util::fnv1a32_ci_literal("kvmkvmkvm"),

@@ -147,7 +147,12 @@ enum class Alert2 : uint64_t {
     cmdline_hash_mismatch            = 1ull << 10,
     cwd_hash_mismatch                = 1ull << 11,
     unc_execution_detected           = 1ull << 12,
-    motw_detected                    = 1ull << 13
+    motw_detected                    = 1ull << 13,
+    cwd_allowlist_violation          = 1ull << 14,
+    image_path_allowlist_violation   = 1ull << 15,
+    safe_dll_search_disabled         = 1ull << 16,
+    known_dll_missing                = 1ull << 17,
+    module_path_policy_violation     = 1ull << 18
 };
 
 inline constexpr Alert operator|(Alert a, Alert b) {
@@ -2058,6 +2063,67 @@ inline bool has_motw(const wchar_t* path) {
     DWORD attrs = ::GetFileAttributesW(ads.c_str());
     return attrs != INVALID_FILE_ATTRIBUTES;
 }
+
+inline bool hash_in_list(uint32_t h, const uint32_t* list, size_t count) {
+    if (!list || count == 0) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (list[i] == h) return true;
+    }
+    return false;
+}
+
+inline bool cwd_allowlist_valid(const uint32_t* hashes, size_t count) {
+    if (!hashes || count == 0) return true;
+    uint32_t h = cwd_hash();
+    return hash_in_list(h, hashes, count);
+}
+
+inline bool image_path_allowlist_valid(const uint32_t* hashes, size_t count) {
+    if (!hashes || count == 0) return true;
+    wchar_t buf[MAX_PATH] = {0};
+    DWORD n = ::GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0) return false;
+    uint32_t h = util::fnv1a32_ci_w(buf);
+    return hash_in_list(h, hashes, count);
+}
+
+inline bool safe_dll_search_enabled() {
+    DWORD val = 0;
+    DWORD size = sizeof(val);
+    LSTATUS st = ::RegGetValueW(HKEY_LOCAL_MACHINE,
+                                L"SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+                                L"SafeDllSearchMode", RRF_RT_REG_DWORD, nullptr, &val, &size);
+    if (st != ERROR_SUCCESS) return true;
+    return val != 0;
+}
+
+inline bool known_dlls_present(const uint32_t* hashes, size_t count) {
+    if (!hashes || count == 0) return true;
+    HKEY key = nullptr;
+    if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                        L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\KnownDLLs",
+                        0, KEY_READ, &key) != ERROR_SUCCESS) {
+        return true;
+    }
+    DWORD idx = 0;
+    wchar_t name[256] = {0};
+    DWORD name_len = 256;
+    std::vector<uint32_t> found;
+    while (::RegEnumValueW(key, idx++, name, &name_len, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+        uint32_t h = util::fnv1a32_ci_w(name);
+        found.push_back(h);
+        name_len = 256;
+    }
+    ::RegCloseKey(key);
+    for (size_t i = 0; i < count; ++i) {
+        bool ok = false;
+        for (uint32_t v : found) {
+            if (v == hashes[i]) { ok = true; break; }
+        }
+        if (!ok) return false;
+    }
+    return true;
+}
 #else
 inline uint32_t parent_pid() { return 0; }
 inline bool parent_chain_valid(const uint32_t*, size_t, size_t = 4) { return true; }
@@ -2069,6 +2135,11 @@ inline uint32_t cmdline_hash() { return 0; }
 inline uint32_t cwd_hash() { return 0; }
 inline bool is_unc_path(const wchar_t*) { return false; }
 inline bool has_motw(const wchar_t*) { return false; }
+inline bool hash_in_list(uint32_t, const uint32_t*, size_t) { return true; }
+inline bool cwd_allowlist_valid(const uint32_t*, size_t) { return true; }
+inline bool image_path_allowlist_valid(const uint32_t*, size_t) { return true; }
+inline bool safe_dll_search_enabled() { return true; }
+inline bool known_dlls_present(const uint32_t*, size_t) { return true; }
 #endif
 
 inline Report run(uint32_t expected_parent_pid, const wchar_t* expected_image_path) {
@@ -2145,6 +2216,26 @@ inline bool exec_private_threshold_exceeded(size_t max_regions) {
         p += mbi.RegionSize;
     }
     return false;
+}
+
+inline bool module_path_policy_violation() {
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ::GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    MODULEENTRY32W me{};
+    me.dwSize = sizeof(me);
+    bool hit = false;
+    if (::Module32FirstW(snap, &me)) {
+        do {
+            const wchar_t* p = me.szExePath;
+            if (wcsstr(p, L"\\Users\\") || wcsstr(p, L"\\AppData\\") ||
+                wcsstr(p, L"\\Temp\\") || wcsstr(p, L"\\Downloads\\")) {
+                hit = true;
+                break;
+            }
+        } while (::Module32NextW(snap, &me));
+    }
+    ::CloseHandle(snap);
+    return hit;
 }
 
 inline size_t module_count() {
@@ -2229,6 +2320,7 @@ inline bool module_whitelist_valid(const uint32_t*, size_t) { return true; }
 inline bool driver_blacklist_detected(const uint32_t*, size_t) { return false; }
 inline bool image_region_unlinked() { return false; }
 inline bool exec_private_threshold_exceeded(size_t) { return false; }
+inline bool module_path_policy_violation() { return false; }
 #endif
 
 inline Report run(const uint32_t* hashes, size_t count) {
@@ -2389,6 +2481,13 @@ struct Config {
     uint32_t cwd_hash_baseline = 0;
     bool disallow_unc = false;
     bool disallow_motw = false;
+    const uint32_t* cwd_allowlist_hashes = nullptr;
+    size_t cwd_allowlist_count = 0;
+    const uint32_t* image_path_allowlist_hashes = nullptr;
+    size_t image_path_allowlist_count = 0;
+    bool enforce_safe_dll_search = false;
+    const uint32_t* known_dll_hashes = nullptr;
+    size_t known_dll_count = 0;
     const uint32_t* parent_chain_hashes = nullptr;
     size_t parent_chain_hash_count = 0;
     size_t parent_chain_max_depth = 4;
@@ -2401,6 +2500,7 @@ struct Config {
     const uint32_t* driver_blacklist_hashes = nullptr;
     size_t driver_blacklist_count = 0;
     size_t exec_private_max_regions = 0;
+    bool enforce_module_path_policy = false;
     const uint32_t* process_hashes = nullptr;
     size_t process_hash_count = 0;
     const uint32_t* window_hashes = nullptr;
@@ -2592,6 +2692,24 @@ inline Report run_all_checks(const Config& cfg = {}) {
             r.set2(Alert2::motw_detected);
         }
     }
+    if (cfg.cwd_allowlist_hashes && cfg.cwd_allowlist_count > 0) {
+        if (!process_integrity::cwd_allowlist_valid(cfg.cwd_allowlist_hashes, cfg.cwd_allowlist_count)) {
+            r.set2(Alert2::cwd_allowlist_violation);
+        }
+    }
+    if (cfg.image_path_allowlist_hashes && cfg.image_path_allowlist_count > 0) {
+        if (!process_integrity::image_path_allowlist_valid(cfg.image_path_allowlist_hashes, cfg.image_path_allowlist_count)) {
+            r.set2(Alert2::image_path_allowlist_violation);
+        }
+    }
+    if (cfg.enforce_safe_dll_search) {
+        if (!process_integrity::safe_dll_search_enabled()) r.set2(Alert2::safe_dll_search_disabled);
+    }
+    if (cfg.known_dll_hashes && cfg.known_dll_count > 0) {
+        if (!process_integrity::known_dlls_present(cfg.known_dll_hashes, cfg.known_dll_count)) {
+            r.set2(Alert2::known_dll_missing);
+        }
+    }
     if (cfg.module_list_hash_baseline != 0) {
         if (anti_injection::module_list_hash() != cfg.module_list_hash_baseline) {
             r.set(Alert::module_list_hash_mismatch);
@@ -2616,6 +2734,9 @@ inline Report run_all_checks(const Config& cfg = {}) {
         if (anti_injection::exec_private_threshold_exceeded(cfg.exec_private_max_regions)) {
             r.set2(Alert2::exec_private_threshold);
         }
+    }
+    if (cfg.enforce_module_path_policy) {
+        if (anti_injection::module_path_policy_violation()) r.set2(Alert2::module_path_policy_violation);
     }
     return r;
 }

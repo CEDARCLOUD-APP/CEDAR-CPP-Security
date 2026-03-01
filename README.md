@@ -112,6 +112,13 @@ cfg.cmdline_hash_baseline = 0;
 cfg.cwd_hash_baseline = 0;
 cfg.disallow_unc = false;
 cfg.disallow_motw = false;
+cfg.cwd_allowlist_hashes = nullptr;
+cfg.cwd_allowlist_count = 0;
+cfg.image_path_allowlist_hashes = nullptr;
+cfg.image_path_allowlist_count = 0;
+cfg.enforce_safe_dll_search = false;
+cfg.known_dll_hashes = nullptr;
+cfg.known_dll_count = 0;
 
 cfg.parent_chain_hashes = nullptr;
 cfg.parent_chain_hash_count = 0;
@@ -130,6 +137,7 @@ cfg.driver_blacklist_hashes = nullptr;
 cfg.driver_blacklist_count = 0;
 
 cfg.exec_private_max_regions = 0;
+cfg.enforce_module_path_policy = false;
 
 cfg.process_hashes = nullptr;
 cfg.process_hash_count = 0;
@@ -208,8 +216,12 @@ cfg.prologue_guard_count = 0;
 - Integrity level RID check
 - Command-line hash baseline
 - Current directory hash baseline
+- Current directory allowlist (hash)
+- Image path allowlist (hash)
 - UNC execution detection
 - Mark‑of‑the‑Web (Zone.Identifier) detection
+- Safe DLL search mode validation
+- KnownDLLs registry presence validation
 
 Example configuration:
 
@@ -224,6 +236,20 @@ p.cfg.cwd_hash_baseline = secure::process_integrity::cwd_hash();
 
 p.cfg.disallow_unc = true;
 p.cfg.disallow_motw = true;
+
+static constexpr uint32_t cwd_allowlist[] = {
+    secure::process_integrity::cwd_hash()
+};
+p.cfg.cwd_allowlist_hashes = cwd_allowlist;
+p.cfg.cwd_allowlist_count = sizeof(cwd_allowlist) / sizeof(cwd_allowlist[0]);
+
+static constexpr uint32_t image_allowlist[] = {
+    secure::util::fnv1a32_ci_w(L"C:\\Program Files\\MyApp\\MyApp.exe")
+};
+p.cfg.image_path_allowlist_hashes = image_allowlist;
+p.cfg.image_path_allowlist_count = sizeof(image_allowlist) / sizeof(image_allowlist[0]);
+
+p.cfg.enforce_safe_dll_search = true;
 ```
 
 ### Anti‑Debug
@@ -287,12 +313,17 @@ p.cfg.disallow_motw = true;
 - Exec private region threshold check
 - Optional private exec whitelist
 - Main image unlinked from module list detection
+- Module path policy (user‑writable path detection)
 
 ### Process Integrity
 
 - Expected parent PID check
 - Expected image path check
 - Parent chain hash whitelist check
+- CWD allowlist check
+- Image path allowlist check
+- Safe DLL search mode validation
+- KnownDLLs registry presence validation
 
 ### VM / Sandbox Heuristics
 
