@@ -172,6 +172,15 @@ cfg.signature_required = false;
 
 cfg.export_name_hash_baseline = 0;
 cfg.export_rva_hash_baseline = 0;
+cfg.export_name_table_hash_baseline = 0;
+cfg.export_ordinal_table_hash_baseline = 0;
+cfg.export_count_baseline = 0;
+
+cfg.export_whitelist_hashes = nullptr;
+cfg.export_whitelist_count = 0;
+
+cfg.export_blacklist_hashes = nullptr;
+cfg.export_blacklist_count = 0;
 
 cfg.exec_private_whitelist = nullptr;
 cfg.exec_private_whitelist_count = 0;
@@ -210,6 +219,10 @@ cfg.prologue_guard_count = 0;
 - Export forwarder validation
 - Export name hash baseline
 - Export RVA table hash baseline
+- Export name table hash baseline
+- Export ordinal table hash baseline
+- Export count baseline
+- Export whitelist/blacklist checks (hashed names)
 - Import module hash baseline
 - Import name hash baseline (IAT)
 - Import module count baseline

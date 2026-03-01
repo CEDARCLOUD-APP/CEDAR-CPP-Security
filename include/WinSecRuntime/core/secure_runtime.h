@@ -131,6 +131,14 @@ enum class Alert : uint64_t {
     , driver_blacklist_detected      = 1ull << 63
 };
 
+enum class Alert2 : uint64_t {
+    export_count_mismatch            = 1ull << 0,
+    export_name_table_hash_mismatch  = 1ull << 1,
+    export_ordinal_table_hash_mismatch = 1ull << 2,
+    export_whitelist_violation       = 1ull << 3,
+    export_blacklist_detected        = 1ull << 4
+};
+
 inline constexpr Alert operator|(Alert a, Alert b) {
     return static_cast<Alert>(static_cast<uint64_t>(a) | static_cast<uint64_t>(b));
 }
@@ -140,10 +148,13 @@ inline constexpr Alert operator&(Alert a, Alert b) {
 
 struct Report {
     uint64_t flags = 0;
+    uint64_t flags2 = 0;
 
-    inline bool ok() const { return flags == 0; }
+    inline bool ok() const { return flags == 0 && flags2 == 0; }
     inline bool has(Alert a) const { return (flags & static_cast<uint64_t>(a)) != 0; }
     inline void set(Alert a) { flags |= static_cast<uint64_t>(a); }
+    inline bool has2(Alert2 a) const { return (flags2 & static_cast<uint64_t>(a)) != 0; }
+    inline void set2(Alert2 a) { flags2 |= static_cast<uint64_t>(a); }
 };
 
 // util
@@ -998,6 +1009,112 @@ inline uint32_t export_rva_table_hash() {
     }
     return h;
 }
+
+inline uint32_t export_name_table_hash() {
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return 0;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir.VirtualAddress || !dir.Size) return 0;
+    auto* exp = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+    auto* names = reinterpret_cast<uint32_t*>(base + exp->AddressOfNames);
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < exp->NumberOfNames; ++i) {
+        const char* s = reinterpret_cast<const char*>(base + names[i]);
+        while (*s) {
+            h ^= static_cast<uint8_t>(*s++);
+            h *= 16777619u;
+        }
+    }
+    return h;
+}
+
+inline uint32_t export_ordinal_table_hash() {
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return 0;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir.VirtualAddress || !dir.Size) return 0;
+    auto* exp = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+    auto* ords = reinterpret_cast<uint16_t*>(base + exp->AddressOfNameOrdinals);
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < exp->NumberOfNames; ++i) {
+        uint16_t v = ords[i];
+        h ^= (v & 0xFF); h *= 16777619u;
+        h ^= ((v >> 8) & 0xFF); h *= 16777619u;
+    }
+    return h;
+}
+
+inline size_t export_count() {
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return 0;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir.VirtualAddress || !dir.Size) return 0;
+    auto* exp = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+    return static_cast<size_t>(exp->NumberOfNames);
+}
+
+inline bool export_whitelist_valid(const uint32_t* hashes, size_t count) {
+    if (!hashes || count == 0) return true;
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return false;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir.VirtualAddress || !dir.Size) return true;
+    auto* exp = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+    auto* names = reinterpret_cast<uint32_t*>(base + exp->AddressOfNames);
+    for (uint32_t i = 0; i < exp->NumberOfNames; ++i) {
+        const char* s = reinterpret_cast<const char*>(base + names[i]);
+        uint32_t h = util::fnv1a32_ci(s);
+        bool found = false;
+        for (size_t j = 0; j < count; ++j) {
+            if (hashes[j] == h) { found = true; break; }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+inline bool export_blacklist_detected(const uint32_t* hashes, size_t count) {
+    if (!hashes || count == 0) return false;
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return false;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir.VirtualAddress || !dir.Size) return false;
+    auto* exp = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+    auto* names = reinterpret_cast<uint32_t*>(base + exp->AddressOfNames);
+    for (uint32_t i = 0; i < exp->NumberOfNames; ++i) {
+        const char* s = reinterpret_cast<const char*>(base + names[i]);
+        uint32_t h = util::fnv1a32_ci(s);
+        for (size_t j = 0; j < count; ++j) {
+            if (hashes[j] == h) return true;
+        }
+    }
+    return false;
+}
 inline bool tls_directory_valid() {
     HMODULE hMod = ::GetModuleHandleW(nullptr);
     if (!hMod) return false;
@@ -1541,6 +1658,11 @@ inline size_t tls_callback_count() { return 0; }
 inline uint32_t tls_callback_hash() { return 0; }
 inline uint32_t export_name_hash() { return 0; }
 inline uint32_t export_rva_table_hash() { return 0; }
+inline uint32_t export_name_table_hash() { return 0; }
+inline uint32_t export_ordinal_table_hash() { return 0; }
+inline size_t export_count() { return 0; }
+inline bool export_whitelist_valid(const uint32_t*, size_t) { return true; }
+inline bool export_blacklist_detected(const uint32_t*, size_t) { return false; }
 inline bool entry_point_protect_valid() { return true; }
 inline bool text_sha256_mismatch(const std::array<uint8_t, 32>&) { return false; }
 inline std::array<uint8_t, 32> text_sha256_current() { return {}; }
@@ -2167,6 +2289,13 @@ struct Config {
     uint32_t delay_import_name_hash_baseline = 0;
     uint32_t export_name_hash_baseline = 0;
     uint32_t export_rva_hash_baseline = 0;
+    uint32_t export_name_table_hash_baseline = 0;
+    uint32_t export_ordinal_table_hash_baseline = 0;
+    size_t export_count_baseline = 0;
+    const uint32_t* export_whitelist_hashes = nullptr;
+    size_t export_whitelist_count = 0;
+    const uint32_t* export_blacklist_hashes = nullptr;
+    size_t export_blacklist_count = 0;
     size_t tls_callback_expected = 0;
     uint32_t tls_callback_hash_baseline = 0;
     uint32_t entry_prologue_size = 16;
@@ -2249,6 +2378,28 @@ inline Report run_all_checks(const Config& cfg = {}) {
     if (cfg.export_rva_hash_baseline != 0) {
         uint32_t rh = anti_tamper::export_rva_table_hash();
         if (rh != cfg.export_rva_hash_baseline) r.set(Alert::export_rva_hash_mismatch);
+    }
+    if (cfg.export_name_table_hash_baseline != 0) {
+        uint32_t nh = anti_tamper::export_name_table_hash();
+        if (nh != cfg.export_name_table_hash_baseline) r.set2(Alert2::export_name_table_hash_mismatch);
+    }
+    if (cfg.export_ordinal_table_hash_baseline != 0) {
+        uint32_t oh = anti_tamper::export_ordinal_table_hash();
+        if (oh != cfg.export_ordinal_table_hash_baseline) r.set2(Alert2::export_ordinal_table_hash_mismatch);
+    }
+    if (cfg.export_count_baseline != 0) {
+        size_t c = anti_tamper::export_count();
+        if (c != cfg.export_count_baseline) r.set2(Alert2::export_count_mismatch);
+    }
+    if (cfg.export_whitelist_hashes && cfg.export_whitelist_count > 0) {
+        if (!anti_tamper::export_whitelist_valid(cfg.export_whitelist_hashes, cfg.export_whitelist_count)) {
+            r.set2(Alert2::export_whitelist_violation);
+        }
+    }
+    if (cfg.export_blacklist_hashes && cfg.export_blacklist_count > 0) {
+        if (anti_tamper::export_blacklist_detected(cfg.export_blacklist_hashes, cfg.export_blacklist_count)) {
+            r.set2(Alert2::export_blacklist_detected);
+        }
     }
     if (!anti_tamper::delay_import_directory_valid()) r.set(Alert::delay_import_invalid);
     if (cfg.tls_callback_expected != 0) {

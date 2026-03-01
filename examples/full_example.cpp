@@ -98,6 +98,9 @@ int main() {
     policy.cfg.delay_import_name_hash_baseline = secure::anti_tamper::delay_import_name_hash();
     policy.cfg.export_name_hash_baseline = secure::anti_tamper::export_name_hash();
     policy.cfg.export_rva_hash_baseline = secure::anti_tamper::export_rva_table_hash();
+    policy.cfg.export_name_table_hash_baseline = secure::anti_tamper::export_name_table_hash();
+    policy.cfg.export_ordinal_table_hash_baseline = secure::anti_tamper::export_ordinal_table_hash();
+    policy.cfg.export_count_baseline = secure::anti_tamper::export_count();
     policy.cfg.tls_callback_expected = secure::anti_tamper::tls_callback_count();
     policy.cfg.tls_callback_hash_baseline = secure::anti_tamper::tls_callback_hash();
     policy.cfg.entry_prologue_size = 16;
