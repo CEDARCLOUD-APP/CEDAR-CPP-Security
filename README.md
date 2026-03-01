@@ -123,6 +123,8 @@ cfg.module_count_baseline = 0;
 cfg.driver_blacklist_hashes = nullptr;
 cfg.driver_blacklist_count = 0;
 
+cfg.exec_private_max_regions = 0;
+
 cfg.process_hashes = nullptr;
 cfg.process_hash_count = 0;
 
@@ -248,7 +250,9 @@ cfg.prologue_guard_count = 0;
 - RWX section detection
 - Writable `.text` detection
 - Private executable region scan
+- Exec private region threshold check
 - Optional private exec whitelist
+- Main image unlinked from module list detection
 
 ### Process Integrity
 

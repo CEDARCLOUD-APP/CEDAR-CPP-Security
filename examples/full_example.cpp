@@ -23,6 +23,7 @@ int main() {
     policy.cfg.module_hash_count = sizeof(module_hashes) / sizeof(module_hashes[0]);
     policy.cfg.module_list_hash_baseline = secure::anti_injection::module_list_hash();
     policy.cfg.module_count_baseline = secure::anti_injection::module_count();
+    policy.cfg.exec_private_max_regions = 4;
     static constexpr uint32_t driver_hashes[] = {
         secure::util::fnv1a32_ci_literal("vboxdrv.sys"),
         secure::util::fnv1a32_ci_literal("vmhgfs.sys")

@@ -136,7 +136,9 @@ enum class Alert2 : uint64_t {
     export_name_table_hash_mismatch  = 1ull << 1,
     export_ordinal_table_hash_mismatch = 1ull << 2,
     export_whitelist_violation       = 1ull << 3,
-    export_blacklist_detected        = 1ull << 4
+    export_blacklist_detected        = 1ull << 4,
+    image_region_unlinked            = 1ull << 5,
+    exec_private_threshold           = 1ull << 6
 };
 
 inline constexpr Alert operator|(Alert a, Alert b) {
@@ -2013,6 +2015,44 @@ inline uint32_t module_list_hash() {
     return h;
 }
 
+inline bool image_region_unlinked() {
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return false;
+    void* base = reinterpret_cast<void*>(hMod);
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ::GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    MODULEENTRY32W me{};
+    me.dwSize = sizeof(me);
+    bool found = false;
+    if (::Module32FirstW(snap, &me)) {
+        do {
+            if (reinterpret_cast<void*>(me.modBaseAddr) == base) { found = true; break; }
+        } while (::Module32NextW(snap, &me));
+    }
+    ::CloseHandle(snap);
+    return !found;
+}
+
+inline bool exec_private_threshold_exceeded(size_t max_regions) {
+    if (max_regions == 0) return false;
+    SYSTEM_INFO si{};
+    ::GetSystemInfo(&si);
+    uint8_t* p = static_cast<uint8_t*>(si.lpMinimumApplicationAddress);
+    uint8_t* end = static_cast<uint8_t*>(si.lpMaximumApplicationAddress);
+    MEMORY_BASIC_INFORMATION mbi{};
+    size_t count = 0;
+    while (p < end) {
+        if (::VirtualQuery(p, &mbi, sizeof(mbi)) == 0) break;
+        if (mbi.State == MEM_COMMIT &&
+            (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
+            mbi.Type == MEM_PRIVATE) {
+            if (++count > max_regions) return true;
+        }
+        p += mbi.RegionSize;
+    }
+    return false;
+}
+
 inline size_t module_count() {
     HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ::GetCurrentProcessId());
     if (snap == INVALID_HANDLE_VALUE) return 0;
@@ -2093,11 +2133,14 @@ inline uint32_t module_list_hash() { return 0; }
 inline size_t module_count() { return 0; }
 inline bool module_whitelist_valid(const uint32_t*, size_t) { return true; }
 inline bool driver_blacklist_detected(const uint32_t*, size_t) { return false; }
+inline bool image_region_unlinked() { return false; }
+inline bool exec_private_threshold_exceeded(size_t) { return false; }
 #endif
 
 inline Report run(const uint32_t* hashes, size_t count) {
     Report r;
     if (module_blacklist_detected(hashes, count)) r.set(Alert::module_blacklist_detected);
+    if (image_region_unlinked()) r.set2(Alert2::image_region_unlinked);
     return r;
 }
 
@@ -2257,6 +2300,7 @@ struct Config {
     size_t module_count_baseline = 0;
     const uint32_t* driver_blacklist_hashes = nullptr;
     size_t driver_blacklist_count = 0;
+    size_t exec_private_max_regions = 0;
     const uint32_t* process_hashes = nullptr;
     size_t process_hash_count = 0;
     const uint32_t* window_hashes = nullptr;
@@ -2438,6 +2482,11 @@ inline Report run_all_checks(const Config& cfg = {}) {
     if (cfg.driver_blacklist_hashes && cfg.driver_blacklist_count > 0) {
         if (anti_injection::driver_blacklist_detected(cfg.driver_blacklist_hashes, cfg.driver_blacklist_count)) {
             r.set(Alert::driver_blacklist_detected);
+        }
+    }
+    if (cfg.exec_private_max_regions > 0) {
+        if (anti_injection::exec_private_threshold_exceeded(cfg.exec_private_max_regions)) {
+            r.set2(Alert2::exec_private_threshold);
         }
     }
     return r;
