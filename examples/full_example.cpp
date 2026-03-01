@@ -95,6 +95,7 @@ int main() {
     policy.cfg.text_chunk_count = 32;
     policy.cfg.text_chunk_baseline = secure::anti_tamper::text_chunk_hash_current(
         policy.cfg.text_chunk_seed, policy.cfg.text_chunk_size, policy.cfg.text_chunk_count);
+    policy.cfg.nop_sled_threshold = 24;
 
     policy.cfg.delay_import_name_hash_baseline = secure::anti_tamper::delay_import_name_hash();
     policy.cfg.export_name_hash_baseline = secure::anti_tamper::export_name_hash();

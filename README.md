@@ -162,6 +162,8 @@ cfg.text_chunk_size = 64;
 cfg.text_chunk_count = 32;
 cfg.text_chunk_baseline = 0;
 
+cfg.nop_sled_threshold = 0;
+
 cfg.delay_import_name_hash_baseline = 0;
 
 cfg.tls_callback_expected = 0;
@@ -217,6 +219,7 @@ cfg.prologue_guard_count = 0;
 - Rolling CRC window hash baseline
 - Entropy bounds for `.text`
 - Randomized `.text` chunk hash baseline
+- NOP sled detection in `.text`
 - Import/export/tls/reloc/delay‑import directory bounds checks
 - Export forwarder validation
 - Export name hash baseline

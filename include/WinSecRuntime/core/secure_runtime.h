@@ -138,7 +138,8 @@ enum class Alert2 : uint64_t {
     export_whitelist_violation       = 1ull << 3,
     export_blacklist_detected        = 1ull << 4,
     image_region_unlinked            = 1ull << 5,
-    exec_private_threshold           = 1ull << 6
+    exec_private_threshold           = 1ull << 6,
+    nop_sled_detected                = 1ull << 7
 };
 
 inline constexpr Alert operator|(Alert a, Alert b) {
@@ -1524,6 +1525,33 @@ inline bool text_entropy_anomaly(double min_entropy, double max_entropy) {
     return false;
 }
 
+inline bool nop_sled_detected(size_t threshold) {
+    if (threshold == 0) return false;
+    HMODULE hMod = ::GetModuleHandleW(nullptr);
+    if (!hMod) return false;
+    auto* base = reinterpret_cast<uint8_t*>(hMod);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    auto* sec = IMAGE_FIRST_SECTION(nt);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        if (std::memcmp(sec[i].Name, ".text", 5) == 0) {
+            uint8_t* text = base + sec[i].VirtualAddress;
+            size_t size = sec[i].Misc.VirtualSize;
+            size_t run = 0;
+            for (size_t j = 0; j < size; ++j) {
+                if (text[j] == 0x90) {
+                    if (++run >= threshold) return true;
+                } else {
+                    run = 0;
+                }
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
 inline uint32_t text_chunk_hash_current(uint32_t seed, uint32_t chunk_size, uint32_t chunk_count) {
     if (seed == 0 || chunk_size == 0 || chunk_count == 0) return 0;
     HMODULE hMod = ::GetModuleHandleW(nullptr);
@@ -1675,6 +1703,7 @@ inline double text_entropy_current() { return 0.0; }
 inline bool entry_point_valid() { return true; }
 inline bool section_bounds_valid() { return true; }
 inline uint32_t text_chunk_hash_current(uint32_t, uint32_t, uint32_t) { return 0; }
+inline bool nop_sled_detected(size_t) { return false; }
 inline bool pe_header_valid() { return true; }
 inline bool rwx_section_detected() { return false; }
 inline bool exec_private_region() { return false; }
@@ -2330,6 +2359,7 @@ struct Config {
     uint32_t text_chunk_size = 64;
     uint32_t text_chunk_count = 32;
     uint32_t text_chunk_baseline = 0;
+    size_t nop_sled_threshold = 0;
     uint32_t delay_import_name_hash_baseline = 0;
     uint32_t export_name_hash_baseline = 0;
     uint32_t export_rva_hash_baseline = 0;
@@ -2410,6 +2440,9 @@ inline Report run_all_checks(const Config& cfg = {}) {
     if (cfg.text_chunk_seed != 0 && cfg.text_chunk_baseline != 0) {
         uint32_t ch = anti_tamper::text_chunk_hash_current(cfg.text_chunk_seed, cfg.text_chunk_size, cfg.text_chunk_count);
         if (ch != cfg.text_chunk_baseline) r.set(Alert::text_chunk_hash_mismatch);
+    }
+    if (cfg.nop_sled_threshold > 0) {
+        if (anti_tamper::nop_sled_detected(cfg.nop_sled_threshold)) r.set2(Alert2::nop_sled_detected);
     }
     if (cfg.delay_import_name_hash_baseline != 0) {
         uint32_t dh = anti_tamper::delay_import_name_hash();
