@@ -6,6 +6,20 @@
 #define WINSECRUNTIME_HEADER_ONLY 1
 #endif
 
+#if defined(_WIN32) && !WINSECRUNTIME_HEADER_ONLY
+#  ifdef WINSECRUNTIME_BUILD_SHARED
+#    ifdef WINSECRUNTIME_EXPORTS
+#      define WINSECRUNTIME_API __declspec(dllexport)
+#    else
+#      define WINSECRUNTIME_API __declspec(dllimport)
+#    endif
+#  else
+#    define WINSECRUNTIME_API
+#  endif
+#else
+#  define WINSECRUNTIME_API
+#endif
+
 namespace WinSecRuntime {
 
 enum class Mode : uint32_t {
@@ -46,11 +60,11 @@ inline void EnableHookGuard(const Policy& p = {}) {
     (void)RunAll(p);
 }
 #else
-bool Initialize(Mode mode, const secure::runtime::Config& cfg = {});
-void StartIntegrityEngine(const Policy& p = {});
-secure::Report RunAll(const Policy& p = {});
-void EnableAntiDebug(const Policy& p = {});
-void EnableHookGuard(const Policy& p = {});
+WINSECRUNTIME_API bool Initialize(Mode mode, const secure::runtime::Config& cfg = {});
+WINSECRUNTIME_API void StartIntegrityEngine(const Policy& p = {});
+WINSECRUNTIME_API secure::Report RunAll(const Policy& p = {});
+WINSECRUNTIME_API void EnableAntiDebug(const Policy& p = {});
+WINSECRUNTIME_API void EnableHookGuard(const Policy& p = {});
 #endif
 
 } // namespace WinSecRuntime
